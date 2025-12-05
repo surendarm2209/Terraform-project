@@ -1,7 +1,13 @@
+############################################################
+# 1. Provider
+############################################################
 provider "aws" {
-  region = "ap-south-1"
+  region = "us-east-1"
 }
 
+############################################################
+# 2. Networking (VPC, Subnets, IGW, Route Table)
+############################################################
 resource "aws_vpc" "devopsshack_vpc" {
   cidr_block = "10.0.0.0/16"
 
@@ -11,11 +17,11 @@ resource "aws_vpc" "devopsshack_vpc" {
 }
 
 resource "aws_subnet" "devopsshack_subnet" {
-  count = 2
-  vpc_id                  = aws_vpc.devopsshack_vpc.id
-  cidr_block              = cidrsubnet(aws_vpc.devopsshack_vpc.cidr_block, 8, count.index)
-  availability_zone       = element(["ap-south-1a", "ap-south-1b"], count.index)
-  map_public_ip_on_launch = true
+  count                    = 2
+  vpc_id                   = aws_vpc.devopsshack_vpc.id
+  cidr_block               = cidrsubnet(aws_vpc.devopsshack_vpc.cidr_block, 8, count.index)
+  availability_zone        = element(["us-east-1a", "us-east-1b"], count.index)
+  map_public_ip_on_launch  = true
 
   tags = {
     Name = "devopsshack-subnet-${count.index}"
@@ -49,6 +55,9 @@ resource "aws_route_table_association" "devopsshack_association" {
   route_table_id = aws_route_table.devopsshack_route_table.id
 }
 
+############################################################
+# 3. Security Groups
+############################################################
 resource "aws_security_group" "devopsshack_cluster_sg" {
   vpc_id = aws_vpc.devopsshack_vpc.id
 
@@ -86,46 +95,9 @@ resource "aws_security_group" "devopsshack_node_sg" {
   }
 }
 
-resource "aws_eks_cluster" "devopsshack" {
-  name     = "devopsshack-cluster"
-  role_arn = aws_iam_role.devopsshack_cluster_role.arn
-
-  vpc_config {
-    subnet_ids         = aws_subnet.devopsshack_subnet[*].id
-    security_group_ids = [aws_security_group.devopsshack_cluster_sg.id]
-  }
-}
-
-
-resource "aws_eks_addon" "ebs_csi_driver" {
-  cluster_name    = aws_eks_cluster.devopsshack.name
-  addon_name      = "aws-ebs-csi-driver"
-  
-  resolve_conflicts_on_create = "OVERWRITE"
-  resolve_conflicts_on_update = "OVERWRITE"
-}
-
-
-resource "aws_eks_node_group" "devopsshack" {
-  cluster_name    = aws_eks_cluster.devopsshack.name
-  node_group_name = "devopsshack-node-group"
-  node_role_arn   = aws_iam_role.devopsshack_node_group_role.arn
-  subnet_ids      = aws_subnet.devopsshack_subnet[*].id
-
-  scaling_config {
-    desired_size = 3
-    max_size     = 3
-    min_size     = 3
-  }
-
-  instance_types = ["t2.medium"]
-
-  remote_access {
-    ec2_ssh_key = var.ssh_key_name
-    source_security_group_ids = [aws_security_group.devopsshack_node_sg.id]
-  }
-}
-
+############################################################
+# 4. IAM Role for EKS Cluster
+############################################################
 resource "aws_iam_role" "devopsshack_cluster_role" {
   name = "devopsshack-cluster-role"
 
@@ -150,6 +122,35 @@ resource "aws_iam_role_policy_attachment" "devopsshack_cluster_role_policy" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
 }
 
+############################################################
+# 5. EKS Cluster
+############################################################
+resource "aws_eks_cluster" "devopsshack" {
+  name     = "devopsshack-cluster"
+  role_arn = aws_iam_role.devopsshack_cluster_role.arn
+
+  vpc_config {
+    subnet_ids         = aws_subnet.devopsshack_subnet[*].id
+    security_group_ids = [aws_security_group.devopsshack_cluster_sg.id]
+  }
+}
+
+############################################################
+# 6. OIDC Provider (Required for EBS CSI)
+############################################################
+data "tls_certificate" "eks_oidc_thumbprint" {
+  url = aws_eks_cluster.devopsshack.identity[0].oidc[0].issuer
+}
+
+resource "aws_iam_openid_connect_provider" "devopsshack" {
+  url             = aws_eks_cluster.devopsshack.identity[0].oidc[0].issuer
+  client_id_list  = ["sts.amazonaws.com"]
+  thumbprint_list = [data.tls_certificate.eks_oidc_thumbprint.certificates[0].sha1_fingerprint]
+}
+
+############################################################
+# 7. IAM Role for Node Group
+############################################################
 resource "aws_iam_role" "devopsshack_node_group_role" {
   name = "devopsshack-node-group-role"
 
@@ -187,4 +188,42 @@ resource "aws_iam_role_policy_attachment" "devopsshack_node_group_registry_polic
 resource "aws_iam_role_policy_attachment" "devopsshack_node_group_ebs_policy" {
   role       = aws_iam_role.devopsshack_node_group_role.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+}
+
+############################################################
+# 8. Node Group
+############################################################
+resource "aws_eks_node_group" "devopsshack" {
+  cluster_name    = aws_eks_cluster.devopsshack.name
+  node_group_name = "devopsshack-node-group"
+  node_role_arn   = aws_iam_role.devopsshack_node_group_role.arn
+  subnet_ids      = aws_subnet.devopsshack_subnet[*].id
+
+  scaling_config {
+    desired_size = 3
+    max_size     = 3
+    min_size     = 3
+  }
+
+  instance_types = ["t2.medium"]
+
+  remote_access {
+    ec2_ssh_key               = var.ssh_key_name
+    source_security_group_ids = [aws_security_group.devopsshack_node_sg.id]
+  }
+}
+
+############################################################
+# 9. EBS CSI Addon (After Node Group + OIDC)
+############################################################
+resource "aws_eks_addon" "ebs_csi_driver" {
+  cluster_name                = aws_eks_cluster.devopsshack.name
+  addon_name                  = "aws-ebs-csi-driver"
+  resolve_conflicts_on_create = "OVERWRITE"
+  resolve_conflicts_on_update = "OVERWRITE"
+
+  depends_on = [
+    aws_eks_node_group.devopsshack,
+    aws_iam_openid_connect_provider.devopsshack
+  ]
 }
