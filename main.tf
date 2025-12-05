@@ -174,6 +174,11 @@ resource "aws_iam_role_policy_attachment" "devopsshack_node_group_role_policy" {
   role       = aws_iam_role.devopsshack_node_group_role.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
 }
+resource "aws_iam_role_policy_attachment" "devopsshack_node_group_ecr_full" {
+  role       = aws_iam_role.devopsshack_node_group_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser"
+}
+
 
 resource "aws_iam_role_policy_attachment" "devopsshack_node_group_cni_policy" {
   role       = aws_iam_role.devopsshack_node_group_role.name
