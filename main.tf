@@ -127,15 +127,6 @@ data "tls_certificate" "eks_oidc_thumbprint" {
   url = aws_eks_cluster.kubernetes.identity[0].oidc[0].issuer
 }
 
-#####################################
-#  FIX 2: CREATE OIDC PROVIDER (IRSA)
-#####################################
-resource "aws_iam_openid_connect_provider" "kubernetes" {
-  url             = aws_eks_cluster.kubernetes.identity[0].oidc[0].issuer
-  client_id_list  = ["sts.amazonaws.com"]
-  thumbprint_list = [data.tls_certificate.eks_oidc_thumbprint.certificates[0].sha1_fingerprint]
-}
-
 ###############################################
 # FIX 3: ADDON (MUST WAIT FOR NODEGROUP + OIDC)
 ###############################################
@@ -146,10 +137,9 @@ resource "aws_eks_addon" "ebs_csi_driver" {
   resolve_conflicts_on_create = "OVERWRITE"
   resolve_conflicts_on_update = "OVERWRITE"
 
-  depends_on = [
-    aws_eks_node_group.kubernetes,
-    aws_iam_openid_connect_provider.kubernetes
-  ]
+depends_on = [
+  aws_eks_node_group.kubernetes
+]
 }
 
 resource "aws_iam_role" "kubernetes_node_group_role" {
