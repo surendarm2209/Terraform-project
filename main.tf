@@ -86,6 +86,43 @@ resource "aws_security_group" "kubernetes_node_sg" {
   }
 }
 
+resource "aws_eks_cluster" "kubernetes" {
+  name     = "kubernetes-cluster"
+  role_arn = aws_iam_role.kubernetes_cluster_role.arn
+
+  vpc_config {
+    subnet_ids         = aws_subnet.kubernetes_subnet[*].id
+    security_group_ids = [aws_security_group.kubernetes_cluster_sg.id]
+  }
+}
+
+resource "aws_eks_addon" "ebs_csi_driver" {
+  cluster_name                = aws_eks_cluster.kubernetes.name
+  addon_name                  = "aws-ebs-csi-driver"
+  resolve_conflicts_on_create = "OVERWRITE"
+  resolve_conflicts_on_update = "OVERWRITE"
+}
+
+resource "aws_eks_node_group" "kubernetes" {
+  cluster_name    = aws_eks_cluster.kubernetes.name
+  node_group_name = "kubernetes-node-group"
+  node_role_arn   = aws_iam_role.kubernetes_node_group_role.arn
+  subnet_ids      = aws_subnet.kubernetes_subnet[*].id
+
+  scaling_config {
+    desired_size = 3
+    max_size     = 3
+    min_size     = 3
+  }
+
+  instance_types = ["t2.medium"]
+
+  remote_access {
+    ec2_ssh_key               = var.ssh_key_name
+    source_security_group_ids = [aws_security_group.kubernetes_node_sg.id]
+  }
+}
+
 resource "aws_iam_role" "kubernetes_cluster_role" {
   name = "kubernetes-cluster-role"
 
@@ -108,38 +145,6 @@ EOF
 resource "aws_iam_role_policy_attachment" "kubernetes_cluster_role_policy" {
   role       = aws_iam_role.kubernetes_cluster_role.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
-}
-
-resource "aws_eks_cluster" "kubernetes" {
-  name     = "kubernetes-cluster"
-  role_arn = aws_iam_role.kubernetes_cluster_role.arn
-
-  vpc_config {
-    subnet_ids         = aws_subnet.kubernetes_subnet[*].id
-    security_group_ids = [aws_security_group.kubernetes_cluster_sg.id]
-  }
-}
-
-###############################
-#  FIX 1: FETCH OIDC THUMBPRINT
-###############################
-data "tls_certificate" "eks_oidc_thumbprint" {
-  url = aws_eks_cluster.kubernetes.identity[0].oidc[0].issuer
-}
-
-###############################################
-# FIX 3: ADDON (MUST WAIT FOR NODEGROUP + OIDC)
-###############################################
-resource "aws_eks_addon" "ebs_csi_driver" {
-  cluster_name = aws_eks_cluster.kubernetes.name
-  addon_name   = "aws-ebs-csi-driver"
-
-  resolve_conflicts_on_create = "OVERWRITE"
-  resolve_conflicts_on_update = "OVERWRITE"
-
-depends_on = [
-  aws_eks_node_group.kubernetes
-]
 }
 
 resource "aws_iam_role" "kubernetes_node_group_role" {
@@ -179,24 +184,4 @@ resource "aws_iam_role_policy_attachment" "kubernetes_node_group_registry_policy
 resource "aws_iam_role_policy_attachment" "kubernetes_node_group_ebs_policy" {
   role       = aws_iam_role.kubernetes_node_group_role.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
-}
-
-resource "aws_eks_node_group" "kubernetes" {
-  cluster_name    = aws_eks_cluster.kubernetes.name
-  node_group_name = "kubernetes-node-group"
-  node_role_arn   = aws_iam_role.kubernetes_node_group_role.arn
-  subnet_ids      = aws_subnet.kubernetes_subnet[*].id
-
-  scaling_config {
-    desired_size = 3
-    max_size     = 3
-    min_size     = 3
-  }
-
-  instance_types = ["t2.medium"]
-
-  remote_access {
-    ec2_ssh_key = var.ssh_key_name
-    source_security_group_ids = [aws_security_group.kubernetes_node_sg.id]
-  }
 }
