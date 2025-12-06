@@ -1,12 +1,12 @@
 ############################################################
-# 1. Provider
+# Provider
 ############################################################
 provider "aws" {
   region = "us-east-1"
 }
 
 ############################################################
-# 2. Networking (VPC, Subnets, IGW, Route Table)
+# VPC
 ############################################################
 resource "aws_vpc" "devopsshack_vpc" {
   cidr_block = "10.0.0.0/16"
@@ -56,7 +56,7 @@ resource "aws_route_table_association" "devopsshack_association" {
 }
 
 ############################################################
-# 3. Security Groups
+# Security Groups
 ############################################################
 resource "aws_security_group" "devopsshack_cluster_sg" {
   vpc_id = aws_vpc.devopsshack_vpc.id
@@ -96,7 +96,7 @@ resource "aws_security_group" "devopsshack_node_sg" {
 }
 
 ############################################################
-# 4. IAM Role for EKS Cluster
+# IAM Role for EKS Cluster
 ############################################################
 resource "aws_iam_role" "devopsshack_cluster_role" {
   name = "devopsshack-cluster-role"
@@ -123,7 +123,7 @@ resource "aws_iam_role_policy_attachment" "devopsshack_cluster_role_policy" {
 }
 
 ############################################################
-# 5. EKS Cluster
+# EKS Cluster
 ############################################################
 resource "aws_eks_cluster" "devopsshack" {
   name     = "devopsshack-cluster"
@@ -136,7 +136,7 @@ resource "aws_eks_cluster" "devopsshack" {
 }
 
 ############################################################
-# 6. OIDC Provider (Required for EBS CSI Driver)
+# OIDC Provider for IRSA (Required for CSI)
 ############################################################
 data "tls_certificate" "eks_oidc_thumbprint" {
   url = aws_eks_cluster.devopsshack.identity[0].oidc[0].issuer
@@ -149,7 +149,7 @@ resource "aws_iam_openid_connect_provider" "devopsshack" {
 }
 
 ############################################################
-# 7. IAM Role for Node Group
+# IAM Role for Node Group
 ############################################################
 resource "aws_iam_role" "devopsshack_node_group_role" {
   name = "devopsshack-node-group-role"
@@ -185,14 +185,18 @@ resource "aws_iam_role_policy_attachment" "devopsshack_node_group_registry_polic
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
 }
 
-# This is required for EBS CSI driver
 resource "aws_iam_role_policy_attachment" "devopsshack_node_group_ebs_policy" {
   role       = aws_iam_role.devopsshack_node_group_role.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
 }
 
+resource "aws_iam_role_policy_attachment" "devopsshack_node_group_ec2_fullaccess" {
+  role       = aws_iam_role.devopsshack_node_group_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2FullAccess"
+}
+
 ############################################################
-# 8. Node Group
+# Node Group
 ############################################################
 resource "aws_eks_node_group" "devopsshack" {
   cluster_name    = aws_eks_cluster.devopsshack.name
@@ -206,7 +210,7 @@ resource "aws_eks_node_group" "devopsshack" {
     min_size     = 2
   }
 
-  instance_types = ["t2.medium"]
+  instance_types = ["t3.medium"]
 
   remote_access {
     ec2_ssh_key               = var.ssh_key_name
@@ -215,17 +219,54 @@ resource "aws_eks_node_group" "devopsshack" {
 }
 
 ############################################################
-# 9. EBS CSI Addon
+# IRSA IAM Role for EBS CSI Addon
+############################################################
+data "aws_iam_policy_document" "ebs_csi_assume_role" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    effect  = "Allow"
+
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.devopsshack.arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(aws_iam_openid_connect_provider.devopsshack.url, "https://", "")}:sub"
+      values   = ["system:serviceaccount:kube-system:ebs-csi-controller-sa"]
+    }
+  }
+}
+
+resource "aws_iam_role" "ebs_csi_driver_role" {
+  name               = "devopsshack-ebs-csi-driver-role"
+  assume_role_policy = data.aws_iam_policy_document.ebs_csi_assume_role.json
+}
+
+resource "aws_iam_role_policy_attachment" "ebs_csi_driver_role_policy" {
+  role       = aws_iam_role.ebs_csi_driver_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+}
+
+resource "aws_iam_role_policy_attachment" "ebs_csi_driver_role_ec2_policy" {
+  role       = aws_iam_role.ebs_csi_driver_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2FullAccess"
+}
+
+############################################################
+# EBS CSI Addon
 ############################################################
 resource "aws_eks_addon" "ebs_csi_driver" {
-  cluster_name = aws_eks_cluster.devopsshack.name
-  addon_name   = "aws-ebs-csi-driver"
-
+  cluster_name                = aws_eks_cluster.devopsshack.name
+  addon_name                  = "aws-ebs-csi-driver"
+  service_account_role_arn    = aws_iam_role.ebs_csi_driver_role.arn
   resolve_conflicts_on_create = "OVERWRITE"
   resolve_conflicts_on_update = "OVERWRITE"
 
   depends_on = [
     aws_eks_node_group.devopsshack,
-    aws_iam_openid_connect_provider.devopsshack
+    aws_iam_openid_connect_provider.devopsshack,
+    aws_iam_role.ebs_csi_driver_role
   ]
 }
