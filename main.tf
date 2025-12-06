@@ -136,7 +136,7 @@ resource "aws_eks_cluster" "devopsshack" {
 }
 
 ############################################################
-# 6. OIDC Provider (Required for EBS CSI)
+# 6. OIDC Provider (REQUIRED FOR EBS CSI DRIVER)
 ############################################################
 data "tls_certificate" "eks_oidc_thumbprint" {
   url = aws_eks_cluster.devopsshack.identity[0].oidc[0].issuer
@@ -174,11 +174,6 @@ resource "aws_iam_role_policy_attachment" "devopsshack_node_group_role_policy" {
   role       = aws_iam_role.devopsshack_node_group_role.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
 }
-resource "aws_iam_role_policy_attachment" "devopsshack_node_group_ecr_full" {
-  role       = aws_iam_role.devopsshack_node_group_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser"
-}
-
 
 resource "aws_iam_role_policy_attachment" "devopsshack_node_group_cni_policy" {
   role       = aws_iam_role.devopsshack_node_group_role.name
@@ -190,45 +185,4 @@ resource "aws_iam_role_policy_attachment" "devopsshack_node_group_registry_polic
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
 }
 
-resource "aws_iam_role_policy_attachment" "devopsshack_node_group_ebs_policy" {
-  role       = aws_iam_role.devopsshack_node_group_role.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
-}
-
-############################################################
-# 8. Node Group
-############################################################
-resource "aws_eks_node_group" "devopsshack" {
-  cluster_name    = aws_eks_cluster.devopsshack.name
-  node_group_name = "devopsshack-node-group"
-  node_role_arn   = aws_iam_role.devopsshack_node_group_role.arn
-  subnet_ids      = aws_subnet.devopsshack_subnet[*].id
-
-  scaling_config {
-    desired_size = 3
-    max_size     = 3
-    min_size     = 3
-  }
-
-  instance_types = ["t2.medium"]
-
-  remote_access {
-    ec2_ssh_key               = var.ssh_key_name
-    source_security_group_ids = [aws_security_group.devopsshack_node_sg.id]
-  }
-}
-
-############################################################
-# 9. EBS CSI Addon (After Node Group + OIDC)
-############################################################
-resource "aws_eks_addon" "ebs_csi_driver" {
-  cluster_name                = aws_eks_cluster.devopsshack.name
-  addon_name                  = "aws-ebs-csi-driver"
-  resolve_conflicts_on_create = "OVERWRITE"
-  resolve_conflicts_on_update = "OVERWRITE"
-
-  depends_on = [
-    aws_eks_node_group.devopsshack,
-    aws_iam_openid_connect_provider.devopsshack
-  ]
-}
+# FIX: Allow EC2 Per
